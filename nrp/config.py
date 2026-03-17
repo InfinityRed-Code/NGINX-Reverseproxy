@@ -34,3 +34,10 @@ WG_PORT = 51825
 # NRP Data Directory (Site DB etc.)
 NRP_DATA_DIR = Path("/var/lib/nrp")
 SITES_DB_PATH = NRP_DATA_DIR / "sites.json"
+
+# Fail2Ban Configuration
+F2B_JAIL_DIR = Path("/etc/fail2ban/jail.d")
+F2B_FILTER_DIR = Path("/etc/fail2ban/filter.d")
+F2B_NRP_JAIL_CONF = F2B_JAIL_DIR / "nrp.conf"
+F2B_FILTER_404 = F2B_FILTER_DIR / "nginx-404.conf"
+F2B_FILTER_SCANNERS = F2B_FILTER_DIR / "nginx-scanners.conf"

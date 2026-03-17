@@ -230,7 +230,25 @@ nrp site list
 nrp site show home --live
 ```
 
-### 5. Weitere Befehle
+### 5. Fail2Ban aktivieren (optional)
+
+Fail2Ban schützt den Reverse Proxy automatisch vor Brute-Force-Angriffen, Bot-Scans und weiteren Angriffsmustern.
+
+```bash
+# Standard-Jails aktivieren (nginx-http-auth, nginx-botsearch, nginx-404)
+sudo nrp f2b enable
+
+# Mit zusätzlichem Scanner-Jail (WP-Login, phpMyAdmin, .env, .git, …)
+sudo nrp f2b enable --with-scanners
+
+# Status und aktuell gebannte IPs anzeigen
+nrp f2b status
+
+# Deaktivieren (entfernt NRP-Konfiguration, fail2ban läuft weiter)
+sudo nrp f2b disable
+```
+
+### 6. Weitere Befehle
 
 ```bash
 # Alle Proxy-Hosts auflisten
@@ -247,6 +265,7 @@ nrp status --detailed
 nrp --help
 nrp add --help
 nrp site --help
+nrp f2b --help
 ```
 
 ## CLI-Referenz
@@ -323,11 +342,13 @@ nrp site create NAME [OPTIONS]
 - `--subnet-prefix INTEGER`: Expliziter Präfix (z.B. `28` für `/28`), überschreibt `--targets`
 - `--email TEXT`: E-Mail für Metadaten
 - `--os [debian|ubuntu|alpine]`: OS-Hinweis für das Install-Script
+- `--lan-cidr TEXT`: LAN-Subnetz hinter dem Remote-Host (z.B. `192.168.1.0/24`). Wird in AllowedIPs und Routing aufgenommen.
 
 **Beispiele:**
 
 ```bash
 nrp site create home --targets 8
+nrp site create home --targets 4 --lan-cidr 192.168.1.0/24
 nrp site create office --subnet-prefix 27
 nrp site create lab --targets 4 --email admin@example.com --os debian
 ```
@@ -374,6 +395,69 @@ nrp site set-pubkey NAME PUBLIC_KEY
 ```
 
 Speichert den Public Key des Site-Hosts und aktualisiert `wg0.conf`. Wird nach dem Ausführen des Install-Scripts aufgerufen.
+
+---
+
+### `nrp f2b`
+
+Verwaltet die Fail2Ban-Integration für NGINX.
+
+#### `nrp f2b enable`
+
+```bash
+sudo nrp f2b enable [--with-scanners]
+```
+
+Installiert fail2ban falls nötig, schreibt alle Jail- und Filter-Konfigurationen und startet den Dienst.
+
+**Optionen:**
+- `--with-scanners`: Aktiviert zusätzlich den `nginx-scanners`-Jail
+
+**Aktivierte Jails (Standard):**
+
+| Jail | Beschreibung |
+|---|---|
+| `nginx-http-auth` | Brute-Force auf HTTP-Authentifizierung |
+| `nginx-botsearch` | Bot/Scanner-Erkennung (built-in Filter) |
+| `nginx-404` | IP-Banning bei gehäuften 404-Fehlern (30 Treffer / 60s → 12h Ban) |
+
+**Mit `--with-scanners` zusätzlich:**
+
+| Jail | Beschreibung |
+|---|---|
+| `nginx-scanners` | WP-Login, phpMyAdmin, `.env`, `.git` u. Ä. (2 Treffer / 10min → 24h Ban) |
+
+**Standard-Schwellwerte (DEFAULT):**
+- `bantime = 24h`
+- `findtime = 10m`
+- `maxretry = 5`
+- `banaction = iptables-allports`
+
+**Beispiele:**
+
+```bash
+sudo nrp f2b enable
+sudo nrp f2b enable --with-scanners
+```
+
+#### `nrp f2b disable`
+
+```bash
+sudo nrp f2b disable [--yes]
+```
+
+Entfernt die NRP-verwalteten Jail- und Filter-Dateien und lädt fail2ban neu. fail2ban selbst wird nicht deinstalliert oder gestoppt.
+
+**Optionen:**
+- `--yes / -y`: Ohne Bestätigungsdialog deaktivieren
+
+#### `nrp f2b status`
+
+```bash
+nrp f2b status
+```
+
+Zeigt ob Fail2Ban aktiviert ist, ob der Dienst läuft und wie viele IPs in jedem Jail aktuell gebannt sind.
 
 ---
 
@@ -594,6 +678,28 @@ nrp status
 certbot renew
 ```
 
+### Fail2Ban debuggen
+
+```bash
+# Aktuelle Jail-Status anzeigen
+nrp f2b status
+
+# Alle Jails direkt über fail2ban-client
+fail2ban-client status
+
+# Einzelnen Jail prüfen
+fail2ban-client status nginx-404
+
+# Gebannte IP manuell entsperren
+fail2ban-client set nginx-404 unbanip <IP>
+
+# Fail2Ban-Logs
+journalctl -u fail2ban -f
+
+# Filter-Regex testen (prüft ob Log-Zeilen matchen)
+fail2ban-regex /var/log/nginx/access.log /etc/fail2ban/filter.d/nginx-404.conf
+```
+
 ### WireGuard-Tunnel debuggen
 
 ```bash
@@ -673,12 +779,14 @@ NRPv2/
 │   │   ├── setup.py             # System Setup (inkl. --with-wireguard)
 │   │   ├── remote_setup.py      # Remote Execution Setup
 │   │   ├── site.py              # Site-Management (WireGuard)
+│   │   ├── f2b.py               # Fail2Ban-Integration
 │   │   └── completion.py        # Shell-Completion Installation
 │   ├── core/                     # Core Funktionalität
 │   │   ├── nginx.py
 │   │   ├── certbot.py
 │   │   ├── validation.py
-│   │   └── wireguard.py         # WireGuard Site-DB & Hub-Konfiguration
+│   │   ├── wireguard.py         # WireGuard Site-DB & Hub-Konfiguration
+│   │   └── fail2ban.py          # Fail2Ban Jail- & Filter-Verwaltung
 │   └── templates/                # Jinja2 Templates
 │       ├── nginx_standard.conf.j2
 │       ├── nginx_custom_port.conf.j2
