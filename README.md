@@ -111,11 +111,27 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 DEFAULT_CLIENT_MAX_BODY_SIZE = "100M"
 DEFAULT_HSTS_MAX_AGE = 31536000  # 1 year in seconds
 
+# WireGuard Configuration
+WG_OVERLAY_CIDR = "10.240.0.0/16"
+WG_INTERFACE_NAME = "wg0"
+WG_CONFIG_PATH = Path("/etc/wireguard/wg0.conf")
+WG_PORT = 51825
+
+# NRP Data Directory (Site DB etc.)
+NRP_DATA_DIR = Path("/var/lib/nrp")
+SITES_DB_PATH = NRP_DATA_DIR / "sites.json"
+
+# Fail2Ban Configuration
+F2B_JAIL_DIR = Path("/etc/fail2ban/jail.d")
+F2B_FILTER_DIR = Path("/etc/fail2ban/filter.d")
+F2B_NRP_JAIL_CONF = F2B_JAIL_DIR / "nrp.conf"
+F2B_FILTER_404 = F2B_FILTER_DIR / "nginx-404.conf"
+F2B_FILTER_SCANNERS = F2B_FILTER_DIR / "nginx-scanners.conf"
 ```
 
 Alle hier aufgelisteten Verzeichnisse können theoretisch angepasst werden, jedoch muss danach sichergestellt werden, dass der ausführende Benutzer die entsprechenden Berechtigungen dafür hat, genau wie certbot und der Webserver NGINX.
 
-Was bedenkenlos angepasst werden kann sind `DEFAULT_CLIENT_MAX_BODY_SIZE` und `DEFAULT_HSTS_MAX_AGE`.
+Was bedenkenlos angepasst werden kann sind `DEFAULT_CLIENT_MAX_BODY_SIZE`, `DEFAULT_HSTS_MAX_AGE` sowie die Fail2Ban-Pfade unter `F2B_*`.
 
 `DEFAULT_CLIENT_MAX_BODY_SIZE` bestimmt wie groß dass Dateien maximal sein dürfen, falls buffering deaktiviert wurde. Dabei sind jedoch nach Best Practices der niedrigste mögliche Wert empfohlen für die daheinter leigende Anwendung. Muss ich also z.B. für eine Website maximal Dateien hochladen, die 150MB groß sind, so sollte ich den Wert auf 150M setzen. Dieser Wert kann daher auch verwendet werden, um das hochladen von zu großen Files durch Ungeschulte zu unterbinden.
 
@@ -585,6 +601,9 @@ ssh -i ~/.ssh/id_ed25519 autonginx@reverseproxy.example.com \
 - Dummy SSL Zertifikat: `/etc/nginx/ssl/`
 - WireGuard Hub-Konfiguration: `/etc/wireguard/wg0.conf`
 - Site-Datenbank: `/var/lib/nrp/sites.json`
+- Fail2Ban Jail-Konfiguration: `/etc/fail2ban/jail.d/nrp.conf`
+- Fail2Ban Filter (404): `/etc/fail2ban/filter.d/nginx-404.conf`
+- Fail2Ban Filter (Scanner): `/etc/fail2ban/filter.d/nginx-scanners.conf`
 
 ### WireGuard-Konfiguration
 
@@ -597,6 +616,20 @@ Die folgenden Werte können in `nrp/config.py` angepasst werden:
 | `WG_CONFIG_PATH` | `/etc/wireguard/wg0.conf` | Pfad zur Hub-Konfiguration |
 | `WG_PORT` | `51820` | UDP-Port für WireGuard (muss in Firewall freigegeben sein) |
 | `NRP_DATA_DIR` | `/var/lib/nrp` | Verzeichnis für die Site-Datenbank |
+
+### Fail2Ban-Konfiguration
+
+Die Pfade der von NRP verwalteten Fail2Ban-Dateien können in `nrp/config.py` angepasst werden:
+
+| Variable | Standard | Beschreibung |
+|---|---|---|
+| `F2B_JAIL_DIR` | `/etc/fail2ban/jail.d` | Verzeichnis für Jail-Konfigurationen |
+| `F2B_FILTER_DIR` | `/etc/fail2ban/filter.d` | Verzeichnis für Filter-Definitionen |
+| `F2B_NRP_JAIL_CONF` | `/etc/fail2ban/jail.d/nrp.conf` | Von NRP verwaltete Jail-Konfiguration |
+| `F2B_FILTER_404` | `/etc/fail2ban/filter.d/nginx-404.conf` | Filter für 404-Erkennung |
+| `F2B_FILTER_SCANNERS` | `/etc/fail2ban/filter.d/nginx-scanners.conf` | Filter für Scanner-Erkennung |
+
+> **Hinweis:** Die Schwellwerte (`bantime`, `findtime`, `maxretry`) sind direkt in den Jail-Definitionen in `nrp/core/fail2ban.py` hinterlegt und können dort angepasst werden.
 
 ### Beispiel einer generierten Konfiguration
 
