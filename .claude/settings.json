@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dpkg -l)",
+      "Bash(ip route:*)",
+      "Bash(source venv/bin/activate)",
+      "Bash(pip install:*)",
+      "Bash(source /opt/NGINX-Reverseproxy/venv/bin/activate)",
+      "Bash(nrp --help)"
+    ]
+  }
+}

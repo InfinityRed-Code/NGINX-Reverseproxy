@@ -24,3 +24,13 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 # Default Values
 DEFAULT_CLIENT_MAX_BODY_SIZE = "100M"
 DEFAULT_HSTS_MAX_AGE = 31536000  # 1 year in seconds
+
+# WireGuard Configuration
+WG_OVERLAY_CIDR = "10.240.0.0/16"
+WG_INTERFACE_NAME = "wg0"
+WG_CONFIG_PATH = Path("/etc/wireguard/wg0.conf")
+WG_PORT = 51825
+
+# NRP Data Directory (Site DB etc.)
+NRP_DATA_DIR = Path("/var/lib/nrp")
+SITES_DB_PATH = NRP_DATA_DIR / "sites.json"

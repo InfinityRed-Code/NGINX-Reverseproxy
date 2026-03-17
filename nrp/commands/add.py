@@ -1,6 +1,7 @@
 """
 Add command - Create new proxy host
 """
+import ipaddress
 import click
 from pathlib import Path
 
@@ -26,15 +27,19 @@ from nrp.config import NGINX_CONF_DIR
 @click.option('--email', help='E-Mail für LetsEncrypt Benachrichtigungen')
 @click.option('--overwrite', '-o', is_flag=True, help='Bestehende Konfiguration überschreiben')
 @click.option('--full-interactive', '-f', is_flag=True, help='Alle Optionen interaktiv abfragen')
-def add(fqdn, internal_ip, internal_port, external_port, protocol, websockets, email, overwrite, full_interactive):
+@click.option('--site', 'site_name', default=None, help='WireGuard-Site-Name (Tunnel-Upstream)')
+def add(fqdn, internal_ip, internal_port, external_port, protocol, websockets, email, overwrite, full_interactive, site_name):
     """
     Erstellt einen neuen Proxy-Host
 
     Beispiele:
 
+    \b
         nrp add example.com -i 192.168.1.10 -p 8080
 
         nrp add test.example.com -i 192.168.1.20 -p 3000 -e 8443 -s https -w
+
+        nrp add app.example.com --site home -i 10.240.12.10 -p 3000
 
         nrp add (interaktiv - nur Basis-Optionen)
 
@@ -73,6 +78,33 @@ def add(fqdn, internal_ip, internal_port, external_port, protocol, websockets, e
     if not validate_ip(internal_ip):
         click.echo(click.style(f'Ungültige IP-Adresse: {internal_ip}', fg='red'))
         return
+
+    # Site validation: check that internal_ip is reachable via the site
+    if site_name:
+        from nrp.core.wireguard import get_site
+        site_obj = get_site(site_name)
+        if site_obj is None:
+            click.echo(click.style(f"Site '{site_name}' nicht gefunden. Bitte zuerst 'nrp site create {site_name}' ausführen.", fg='red'))
+            return
+        try:
+            overlay_net = ipaddress.ip_network(site_obj['subnet'], strict=False)
+            lan_cidr = site_obj.get('lan_cidr')
+            lan_net = ipaddress.ip_network(lan_cidr, strict=False) if lan_cidr else None
+            addr = ipaddress.ip_address(internal_ip)
+            in_overlay = addr in overlay_net
+            in_lan = lan_net is not None and addr in lan_net
+            if not in_overlay and not in_lan:
+                # Warn but allow – LAN CIDR may not be stored yet
+                click.echo(click.style(
+                    f"Hinweis: IP {internal_ip} liegt weder im Overlay-Subnetz ({site_obj['subnet']})"
+                    + (f" noch im LAN ({lan_cidr})" if lan_cidr else " noch in einem bekannten LAN der Site")
+                    + ". Stelle sicher, dass das Netzwerk über den Tunnel geroutet wird.",
+                    fg='yellow'
+                ))
+        except ValueError as e:
+            click.echo(click.style(f"Subnetz-Validierungsfehler: {e}", fg='red'))
+            return
+        click.echo(click.style(f"✓ Site '{site_name}' gefunden (Subnetz: {site_obj['subnet']})", fg='cyan'))
 
     if not internal_port:
         internal_port = click.prompt('Interner Port', type=int, default=8080)
