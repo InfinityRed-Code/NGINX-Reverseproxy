@@ -11,6 +11,7 @@ Modernes Python CLI-Tool zur Verwaltung von NGINX Reverse Proxy Konfigurationen 
 - **Jinja2 Templates**: Flexible und wartbare Konfigurationsvorlagen
 - **Remote Execution**: Sichere Verwaltung über SSH mit eingeschränkten Benutzerrechten
 - **Validierung**: Automatische Überprüfung von Eingaben (FQDN, IP, Ports)
+- **WireGuard Site-Management**: Hub-and-Spoke-Tunnel zu entfernten Netzwerken – Dienste hinter NAT ohne Port-Forwarding veröffentlichen
 
 ## Voraussetzungen
 
@@ -18,6 +19,7 @@ Modernes Python CLI-Tool zur Verwaltung von NGINX Reverse Proxy Konfigurationen 
 - Python 3.8+
 - Root- oder sudo-Zugriff
 - Portweiterleitung für Ports 80 und 443 (und weitere verwendete Ports)
+- *(Optional für Sites)* UDP-Port 51820 offen für eingehende WireGuard-Verbindungen
 
 ## Installation
 
@@ -47,6 +49,9 @@ sudo ln -s /opt/NGINX-Reverseproxy/venv/bin/nrp /usr/local/bin/nrp
 ```bash
 # Installiert NGINX, Certbot und alle Abhängigkeiten
 sudo nrp setup
+
+# Mit WireGuard-Unterstützung für Site-Tunnel
+sudo nrp setup --with-wireguard
 ```
 
 Das Setup führt folgende Schritte durch:
@@ -55,6 +60,7 @@ Das Setup führt folgende Schritte durch:
 - Erstellung eines selbstsignierten Dummy-Zertifikats
 - Einrichtung einer Catch-All Konfiguration
 - Entfernung der Standard-NGINX-Konfiguration
+- *(Mit `--with-wireguard`)* Installation von WireGuard, Aktivierung von IP-Forwarding, Initialisierung des Hub-Interface `wg0`
 
 ### 1b. Shell-Completion aktivieren (optional, empfohlen)
 
@@ -105,11 +111,27 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 DEFAULT_CLIENT_MAX_BODY_SIZE = "100M"
 DEFAULT_HSTS_MAX_AGE = 31536000  # 1 year in seconds
 
+# WireGuard Configuration
+WG_OVERLAY_CIDR = "10.240.0.0/16"
+WG_INTERFACE_NAME = "wg0"
+WG_CONFIG_PATH = Path("/etc/wireguard/wg0.conf")
+WG_PORT = 51825
+
+# NRP Data Directory (Site DB etc.)
+NRP_DATA_DIR = Path("/var/lib/nrp")
+SITES_DB_PATH = NRP_DATA_DIR / "sites.json"
+
+# Fail2Ban Configuration
+F2B_JAIL_DIR = Path("/etc/fail2ban/jail.d")
+F2B_FILTER_DIR = Path("/etc/fail2ban/filter.d")
+F2B_NRP_JAIL_CONF = F2B_JAIL_DIR / "nrp.conf"
+F2B_FILTER_404 = F2B_FILTER_DIR / "nginx-404.conf"
+F2B_FILTER_SCANNERS = F2B_FILTER_DIR / "nginx-scanners.conf"
 ```
 
 Alle hier aufgelisteten Verzeichnisse können theoretisch angepasst werden, jedoch muss danach sichergestellt werden, dass der ausführende Benutzer die entsprechenden Berechtigungen dafür hat, genau wie certbot und der Webserver NGINX.
 
-Was bedenkenlos angepasst werden kann sind `DEFAULT_CLIENT_MAX_BODY_SIZE` und `DEFAULT_HSTS_MAX_AGE`.
+Was bedenkenlos angepasst werden kann sind `DEFAULT_CLIENT_MAX_BODY_SIZE`, `DEFAULT_HSTS_MAX_AGE` sowie die Fail2Ban-Pfade unter `F2B_*`.
 
 `DEFAULT_CLIENT_MAX_BODY_SIZE` bestimmt wie groß dass Dateien maximal sein dürfen, falls buffering deaktiviert wurde. Dabei sind jedoch nach Best Practices der niedrigste mögliche Wert empfohlen für die daheinter leigende Anwendung. Muss ich also z.B. für eine Website maximal Dateien hochladen, die 150MB groß sind, so sollte ich den Wert auf 150M setzen. Dieser Wert kann daher auch verwendet werden, um das hochladen von zu großen Files durch Ungeschulte zu unterbinden.
 
@@ -166,7 +188,83 @@ Kurzform:
 nrp add example.com -i 192.168.1.10 -p 8080
 ```
 
-### 4. Weitere Befehle
+#### Via WireGuard-Tunnel (Site als Upstream)
+
+Wenn die Anwendung hinter einem NAT liegt und über eine Site erreichbar ist:
+
+```bash
+nrp add app.example.com \
+  --site home \
+  --internal-ip 10.240.0.5 \
+  --internal-port 3000 \
+  --external-port 443 \
+  --protocol http
+```
+
+Das Tool prüft automatisch, dass `--internal-ip` im Subnetz der angegebenen Site liegt.
+
+### 4. Site-Management (WireGuard-Tunnel)
+
+Sites ermöglichen es, Dienste aus entfernten Netzwerken (z.B. Heimnetz hinter NAT) über einen verschlüsselten WireGuard-Tunnel durch den VPS zu veröffentlichen.
+
+**Topologie:**
+
+```
+Heimnetz / Büro                   VPS (Hub)
+┌─────────────────┐               ┌──────────────────────┐
+│  Dienst :3000   │               │  NGINX               │
+│  10.240.0.5     │◄─ WireGuard ─►│  wg0 (10.240.0.1)    │
+│  Site-Host      │   Tunnel      │  → proxy_pass        │
+│  10.240.0.2     │               │    10.240.0.5:3000    │
+└─────────────────┘               └──────────────────────┘
+                                         ▲
+                                  Öffentliches Internet
+                                  (Port 443 HTTPS)
+```
+
+**Typischer Workflow:**
+
+```bash
+# 1. Site anlegen (Subnetz wird automatisch vergeben)
+nrp site create home --targets 8
+
+# 2. Install-Script generieren
+nrp site install-script home > install-home.sh
+
+# 3. Script auf den Site-Host übertragen und ausführen
+scp install-home.sh user@site-host:/tmp/
+ssh user@site-host 'bash /tmp/install-home.sh'
+
+# 4. Public Key registrieren (wird vom Script ausgegeben)
+nrp site set-pubkey home <PUBLIC_KEY_AUS_SCRIPT_OUTPUT>
+
+# 5. Anwendung freigeben
+nrp add app.example.com --site home -i 10.240.0.5 -p 3000
+
+# 6. Status prüfen
+nrp site list
+nrp site show home --live
+```
+
+### 5. Fail2Ban aktivieren (optional)
+
+Fail2Ban schützt den Reverse Proxy automatisch vor Brute-Force-Angriffen, Bot-Scans und weiteren Angriffsmustern.
+
+```bash
+# Standard-Jails aktivieren (nginx-http-auth, nginx-botsearch, nginx-404)
+sudo nrp f2b enable
+
+# Mit zusätzlichem Scanner-Jail (WP-Login, phpMyAdmin, .env, .git, …)
+sudo nrp f2b enable --with-scanners
+
+# Status und aktuell gebannte IPs anzeigen
+nrp f2b status
+
+# Deaktivieren (entfernt NRP-Konfiguration, fail2ban läuft weiter)
+sudo nrp f2b disable
+```
+
+### 6. Weitere Befehle
 
 ```bash
 # Alle Proxy-Hosts auflisten
@@ -182,6 +280,8 @@ nrp status --detailed
 # Hilfe anzeigen
 nrp --help
 nrp add --help
+nrp site --help
+nrp f2b --help
 ```
 
 ## CLI-Referenz
@@ -191,11 +291,12 @@ nrp add --help
 Installiert die Umgebung auf einem Debian 13 System.
 
 ```bash
-sudo nrp setup [--skip-packages]
+sudo nrp setup [--skip-packages] [--with-wireguard]
 ```
 
 **Optionen:**
 - `--skip-packages`: Überspringt die Paketinstallation
+- `--with-wireguard`: Installiert WireGuard, aktiviert IP-Forwarding und initialisiert `wg0`
 
 ### `nrp add`
 
@@ -214,6 +315,7 @@ nrp add [FQDN] [OPTIONS]
 - `--email TEXT`: E-Mail für LetsEncrypt Benachrichtigungen
 - `-o, --overwrite`: Bestehende Konfiguration überschreiben
 - `-f, --full-interactive`: Alle Optionen interaktiv abfragen (statt nur Basis-Parameter)
+- `--site TEXT`: Name einer vorhandenen WireGuard-Site; `--internal-ip` muss im Subnetz der Site liegen
 
 **Beispiele:**
 
@@ -236,7 +338,144 @@ nrp add secure.example.com -i 192.168.1.30 -p 8443 -e 9443 -s https
 
 # Mit E-Mail für Zertifikate
 nrp add example.com -i 192.168.1.10 -p 8080 --email admin@example.com
+
+# Via WireGuard-Tunnel (Site muss vorher angelegt sein)
+nrp add app.example.com --site home -i 10.240.0.5 -p 3000
 ```
+
+### `nrp site`
+
+Verwaltet WireGuard-Tunnel-Sites (Hub-and-Spoke).
+
+#### `nrp site create`
+
+```bash
+nrp site create NAME [OPTIONS]
+```
+
+**Optionen:**
+- `--targets INTEGER`: Anzahl interner Dienste – bestimmt Subnetz-Größe (1–2 → /30, 3–6 → /29, 7–14 → /28, 15–30 → /27 …)
+- `--subnet-prefix INTEGER`: Expliziter Präfix (z.B. `28` für `/28`), überschreibt `--targets`
+- `--email TEXT`: E-Mail für Metadaten
+- `--os [debian|ubuntu|alpine]`: OS-Hinweis für das Install-Script
+- `--lan-cidr TEXT`: LAN-Subnetz hinter dem Remote-Host (z.B. `192.168.1.0/24`). Wird in AllowedIPs und Routing aufgenommen.
+
+**Beispiele:**
+
+```bash
+nrp site create home --targets 8
+nrp site create home --targets 4 --lan-cidr 192.168.1.0/24
+nrp site create office --subnet-prefix 27
+nrp site create lab --targets 4 --email admin@example.com --os debian
+```
+
+#### `nrp site list`
+
+```bash
+nrp site list
+```
+
+Tabellarische Übersicht aller Sites mit Name, Subnetz, Connector-IP und Status.
+
+#### `nrp site show`
+
+```bash
+nrp site show NAME [--live]
+```
+
+**Optionen:**
+- `--live`: Pingt die Connector-IP und zeigt den aktuellen Verbindungsstatus
+
+#### `nrp site delete`
+
+```bash
+nrp site delete NAME [--keep-config] [--yes]
+```
+
+**Optionen:**
+- `--keep-config`: Entfernt den WireGuard-Peer aus `wg0.conf`, behält aber die Metadaten in der DB
+- `--yes / -y`: Ohne Bestätigungsdialog löschen
+
+#### `nrp site install-script`
+
+```bash
+nrp site install-script NAME [--os debian|ubuntu|alpine] > install-NAME.sh
+```
+
+Generiert ein Bash-Script, das auf dem Site-Host WireGuard installiert, ein Key-Paar erzeugt, die Tunnel-Konfiguration schreibt und den Public Key ausgibt.
+
+#### `nrp site set-pubkey`
+
+```bash
+nrp site set-pubkey NAME PUBLIC_KEY
+```
+
+Speichert den Public Key des Site-Hosts und aktualisiert `wg0.conf`. Wird nach dem Ausführen des Install-Scripts aufgerufen.
+
+---
+
+### `nrp f2b`
+
+Verwaltet die Fail2Ban-Integration für NGINX.
+
+#### `nrp f2b enable`
+
+```bash
+sudo nrp f2b enable [--with-scanners]
+```
+
+Installiert fail2ban falls nötig, schreibt alle Jail- und Filter-Konfigurationen und startet den Dienst.
+
+**Optionen:**
+- `--with-scanners`: Aktiviert zusätzlich den `nginx-scanners`-Jail
+
+**Aktivierte Jails (Standard):**
+
+| Jail | Beschreibung |
+|---|---|
+| `nginx-http-auth` | Brute-Force auf HTTP-Authentifizierung |
+| `nginx-botsearch` | Bot/Scanner-Erkennung (built-in Filter) |
+| `nginx-404` | IP-Banning bei gehäuften 404-Fehlern (30 Treffer / 60s → 12h Ban) |
+
+**Mit `--with-scanners` zusätzlich:**
+
+| Jail | Beschreibung |
+|---|---|
+| `nginx-scanners` | WP-Login, phpMyAdmin, `.env`, `.git` u. Ä. (2 Treffer / 10min → 24h Ban) |
+
+**Standard-Schwellwerte (DEFAULT):**
+- `bantime = 24h`
+- `findtime = 10m`
+- `maxretry = 5`
+- `banaction = iptables-allports`
+
+**Beispiele:**
+
+```bash
+sudo nrp f2b enable
+sudo nrp f2b enable --with-scanners
+```
+
+#### `nrp f2b disable`
+
+```bash
+sudo nrp f2b disable [--yes]
+```
+
+Entfernt die NRP-verwalteten Jail- und Filter-Dateien und lädt fail2ban neu. fail2ban selbst wird nicht deinstalliert oder gestoppt.
+
+**Optionen:**
+- `--yes / -y`: Ohne Bestätigungsdialog deaktivieren
+
+#### `nrp f2b status`
+
+```bash
+nrp f2b status
+```
+
+Zeigt ob Fail2Ban aktiviert ist, ob der Dienst läuft und wie viele IPs in jedem Jail aktuell gebannt sind.
+
+---
 
 ### `nrp remove`
 
@@ -360,6 +599,37 @@ ssh -i ~/.ssh/id_ed25519 autonginx@reverseproxy.example.com \
 - SSL Zertifikate: `/etc/letsencrypt/live/`
 - HTML Ressourcen: `/usr/share/nginx/html/`
 - Dummy SSL Zertifikat: `/etc/nginx/ssl/`
+- WireGuard Hub-Konfiguration: `/etc/wireguard/wg0.conf`
+- Site-Datenbank: `/var/lib/nrp/sites.json`
+- Fail2Ban Jail-Konfiguration: `/etc/fail2ban/jail.d/nrp.conf`
+- Fail2Ban Filter (404): `/etc/fail2ban/filter.d/nginx-404.conf`
+- Fail2Ban Filter (Scanner): `/etc/fail2ban/filter.d/nginx-scanners.conf`
+
+### WireGuard-Konfiguration
+
+Die folgenden Werte können in `nrp/config.py` angepasst werden:
+
+| Variable | Standard | Beschreibung |
+|---|---|---|
+| `WG_OVERLAY_CIDR` | `10.240.0.0/16` | Overlay-Netzwerk für alle Tunnel-Subnetze |
+| `WG_INTERFACE_NAME` | `wg0` | Name des Hub-WireGuard-Interface |
+| `WG_CONFIG_PATH` | `/etc/wireguard/wg0.conf` | Pfad zur Hub-Konfiguration |
+| `WG_PORT` | `51820` | UDP-Port für WireGuard (muss in Firewall freigegeben sein) |
+| `NRP_DATA_DIR` | `/var/lib/nrp` | Verzeichnis für die Site-Datenbank |
+
+### Fail2Ban-Konfiguration
+
+Die Pfade der von NRP verwalteten Fail2Ban-Dateien können in `nrp/config.py` angepasst werden:
+
+| Variable | Standard | Beschreibung |
+|---|---|---|
+| `F2B_JAIL_DIR` | `/etc/fail2ban/jail.d` | Verzeichnis für Jail-Konfigurationen |
+| `F2B_FILTER_DIR` | `/etc/fail2ban/filter.d` | Verzeichnis für Filter-Definitionen |
+| `F2B_NRP_JAIL_CONF` | `/etc/fail2ban/jail.d/nrp.conf` | Von NRP verwaltete Jail-Konfiguration |
+| `F2B_FILTER_404` | `/etc/fail2ban/filter.d/nginx-404.conf` | Filter für 404-Erkennung |
+| `F2B_FILTER_SCANNERS` | `/etc/fail2ban/filter.d/nginx-scanners.conf` | Filter für Scanner-Erkennung |
+
+> **Hinweis:** Die Schwellwerte (`bantime`, `findtime`, `maxretry`) sind direkt in den Jail-Definitionen in `nrp/core/fail2ban.py` hinterlegt und können dort angepasst werden.
 
 ### Beispiel einer generierten Konfiguration
 
@@ -441,6 +711,48 @@ nrp status
 certbot renew
 ```
 
+### Fail2Ban debuggen
+
+```bash
+# Aktuelle Jail-Status anzeigen
+nrp f2b status
+
+# Alle Jails direkt über fail2ban-client
+fail2ban-client status
+
+# Einzelnen Jail prüfen
+fail2ban-client status nginx-404
+
+# Gebannte IP manuell entsperren
+fail2ban-client set nginx-404 unbanip <IP>
+
+# Fail2Ban-Logs
+journalctl -u fail2ban -f
+
+# Filter-Regex testen (prüft ob Log-Zeilen matchen)
+fail2ban-regex /var/log/nginx/access.log /etc/fail2ban/filter.d/nginx-404.conf
+```
+
+### WireGuard-Tunnel debuggen
+
+```bash
+# Hub-Status anzeigen (alle verbundenen Peers)
+wg show wg0
+
+# Tunnel-Konfiguration prüfen
+cat /etc/wireguard/wg0.conf
+
+# Site-Konnektivität testen (Ping zur Connector-IP)
+nrp site show home --live
+ping 10.240.0.2
+
+# WireGuard-Logs
+journalctl -u wg-quick@wg0 -f
+
+# IP-Forwarding prüfen
+sysctl net.ipv4.ip_forward
+```
+
 ## Migration von v1 (Bash-Skripte)
 
 Die alten Bash-Skripte befinden sich im `legacy/` Verzeichnis zur Referenz.
@@ -491,19 +803,23 @@ NRPv2/
 ├── nrp/                          # Python Package
 │   ├── __init__.py
 │   ├── cli.py                    # CLI Entry Point
-│   ├── config.py                 # Konfiguration
+│   ├── config.py                 # Konfiguration (inkl. WireGuard-Konstanten)
 │   ├── commands/                 # CLI Commands
-│   │   ├── add.py               # Host hinzufügen
+│   │   ├── add.py               # Host hinzufügen (inkl. --site)
 │   │   ├── remove.py            # Host entfernen (mit Domain-Completion)
 │   │   ├── list_cmd.py          # Hosts auflisten
 │   │   ├── status.py            # Status anzeigen
-│   │   ├── setup.py             # System Setup
+│   │   ├── setup.py             # System Setup (inkl. --with-wireguard)
 │   │   ├── remote_setup.py      # Remote Execution Setup
+│   │   ├── site.py              # Site-Management (WireGuard)
+│   │   ├── f2b.py               # Fail2Ban-Integration
 │   │   └── completion.py        # Shell-Completion Installation
 │   ├── core/                     # Core Funktionalität
 │   │   ├── nginx.py
 │   │   ├── certbot.py
-│   │   └── validation.py
+│   │   ├── validation.py
+│   │   ├── wireguard.py         # WireGuard Site-DB & Hub-Konfiguration
+│   │   └── fail2ban.py          # Fail2Ban Jail- & Filter-Verwaltung
 │   └── templates/                # Jinja2 Templates
 │       ├── nginx_standard.conf.j2
 │       ├── nginx_custom_port.conf.j2

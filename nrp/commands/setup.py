@@ -16,7 +16,9 @@ from nrp.config import (
 
 @click.command()
 @click.option('--skip-packages', is_flag=True, help='Paketinstallation überspringen')
-def setup(skip_packages):
+@click.option('--with-wireguard', is_flag=True, default=False,
+              help='WireGuard für Site-Tunnel-Unterstützung mitinstallieren')
+def setup(skip_packages, with_wireguard):
     """
     Installiert die Umgebung auf einem Debian 13 System
 
@@ -42,6 +44,8 @@ def setup(skip_packages):
             'curl', 'net-tools', 'sudo', 'nginx', 'certbot',
             'python3', 'python3-full', 'python3-certbot-nginx', 'openssl'
         ]
+        if with_wireguard:
+            packages += ['wireguard', 'wireguard-tools']
 
         try:
             subprocess.run(['apt', 'update'], check=True)
@@ -133,6 +137,44 @@ def setup(skip_packages):
         click.echo(click.style('  ✗ Fehler beim Neuladen von NGINX', fg='red'))
         return
 
+    # Step 9 (optional): WireGuard setup
+    if with_wireguard:
+        click.echo('\n9. Konfiguriere WireGuard (Hub)...')
+        # Enable IP forwarding
+        sysctl_conf = Path('/etc/sysctl.d/99-nrp-wireguard.conf')
+        sysctl_conf.write_text('net.ipv4.ip_forward = 1\n')
+        try:
+            subprocess.run(['sysctl', '-p', str(sysctl_conf)], check=True, capture_output=True)
+            click.echo(click.style('  ✓ IP-Forwarding aktiviert', fg='green'))
+        except subprocess.CalledProcessError:
+            click.echo(click.style('  ✗ Fehler beim Aktivieren von IP-Forwarding', fg='yellow'))
+
+        # Create NRP data directory for site DB
+        from nrp.config import NRP_DATA_DIR
+        NRP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        click.echo(click.style(f'  ✓ Datenverzeichnis erstellt: {NRP_DATA_DIR}', fg='green'))
+
+        # Initialize wg0 interface (lazy – only if wg is available)
+        try:
+            from nrp.core.wireguard import _ensure_wg_interface, _add_site_routes, list_sites
+            _ensure_wg_interface()
+            subprocess.run(['systemctl', 'enable', '--now', 'wg-quick@wg0'],
+                           check=True, capture_output=True)
+            click.echo(click.style('  ✓ WireGuard wg0 aktiviert', fg='green'))
+
+            # Sync kernel routes for all existing sites with lan_cidr
+            sites_with_lan = [s for s in list_sites() if s.get("lan_cidr")]
+            if sites_with_lan:
+                for s in sites_with_lan:
+                    _add_site_routes(s)
+                click.echo(click.style(f'  ✓ Routen für {len(sites_with_lan)} Site(s) synchronisiert', fg='green'))
+        except Exception as e:
+            click.echo(click.style(f'  ✗ WireGuard konnte nicht gestartet werden: {e}', fg='yellow'))
+            click.echo('    Starten Sie WireGuard manuell mit: systemctl enable --now wg-quick@wg0')
+
     click.echo(click.style('\n✓ Installation erfolgreich abgeschlossen!', fg='green', bold=True))
     click.echo('\nSie können jetzt Proxy-Hosts hinzufügen mit:')
     click.echo('  nrp add example.com')
+    if with_wireguard:
+        click.echo('\nWireGuard-Sites verwalten mit:')
+        click.echo('  nrp site create <NAME> --targets <N>')

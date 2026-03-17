@@ -21,6 +21,8 @@ def cli():
 
 # Import commands after cli group is defined to avoid circular imports
 from nrp.commands import add, remove, list_cmd, setup, remote_setup, status, completion
+from nrp.commands import site
+from nrp.commands import f2b
 
 cli.add_command(add.add)
 cli.add_command(remove.remove)
@@ -29,6 +31,8 @@ cli.add_command(setup.setup)
 cli.add_command(remote_setup.remote_setup)
 cli.add_command(status.status)
 cli.add_command(completion.completion)
+cli.add_command(site.site)
+cli.add_command(f2b.f2b)
 
 
 if __name__ == '__main__':
