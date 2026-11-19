@@ -1,0 +1,86 @@
+name: CI
+
+# Entwicklungs-Build: Go-Tests, Image-Build (amd64), E2E und Scan – ohne Push.
+on:
+  push:
+    branches: [main, api-rewrite]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go (vet, test, govulncheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go-Version aus versions.env
+        id: go
+        run: echo "version=$(sed -n 's/^GO_IMAGE=golang:\([0-9.]*\)-.*/\1/p' versions.env)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Generierter Code ist aktuell
+        run: |
+          go generate ./...
+          git diff --exit-code
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  image:
+    name: Image (Build, E2E, Scan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build-Argumente aus versions.env
+        id: args
+        run: |
+          {
+            echo 'list<<EOF'
+            grep -Ev '^(#|$)' versions.env
+            echo "VERSION=ci-${GITHUB_SHA::12}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+      - name: Build (inkl. Smoke-Test im Dockerfile)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          build-args: ${{ steps.args.outputs.list }}
+          tags: nrp:ci
+          load: true
+          cache-from: type=gha,scope=nrp-amd64
+          cache-to: type=gha,scope=nrp-amd64,mode=max
+      - name: E2E (gehaerteter Start, WAF-Smoke, nrp doctor)
+        run: bash docker/tests/e2e.sh nrp:ci
+      - name: E2E (ACME gegen Pebble, Proxy, WAF, mTLS-API, Rollback, Neustart, Offline-Modus)
+        run: bash docker/tests/e2e-api.sh nrp:ci
+      - name: E2E (WireGuard-Site mit NET_ADMIN)
+        run: |
+          sudo modprobe wireguard || true
+          rc=0; bash docker/tests/e2e-wireguard.sh nrp:ci || rc=$?
+          if [ "$rc" = 77 ]; then echo "::warning::WireGuard-Kernelmodul fehlt auf dem Runner, Test uebersprungen"; exit 0; fi
+          exit "$rc"
+      - name: Trivy (Abbruch bei CRITICAL/HIGH mit verfügbarem Fix)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: nrp:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          vuln-type: os,library
+      - name: Trivy (vollständiger Bericht)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: nrp:ci
+          format: table
+          exit-code: "0"

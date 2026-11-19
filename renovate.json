@@ -1,0 +1,118 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommits"],
+  "timezone": "Europe/Berlin",
+  "labels": ["dependencies"],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"],
+    "schedule": ["at any time"],
+    "prPriority": 10,
+    "automerge": true
+  },
+  "osvVulnerabilityAlerts": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Basis-Images in versions.env (Tag + Digest)",
+      "managerFilePatterns": ["/^versions\\.env$/"],
+      "matchStrings": [
+        "(?:DEBIAN_IMAGE|GO_IMAGE)=(?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "nginx (Stable-Linie) – NGINX_SHA256 muss im PR nachgezogen werden",
+      "managerFilePatterns": ["/^versions\\.env$/"],
+      "matchStrings": ["NGINX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "nginx/nginx",
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^release-(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^versions\\.env$/"],
+      "matchStrings": ["LIBCORAZA_REF=(?<currentValue>v[\\d.]+)"],
+      "depNameTemplate": "corazawaf/libcoraza",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^versions\\.env$/"],
+      "matchStrings": ["CORAZA_NGINX_REF=(?<currentValue>v[\\d.]+)"],
+      "depNameTemplate": "corazawaf/coraza-nginx",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^versions\\.env$/"],
+      "matchStrings": ["CRS_REF=(?<currentValue>v[\\d.]+)"],
+      "depNameTemplate": "coreruleset/coreruleset",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "s6-overlay – die drei S6_OVERLAY_SHA256_* müssen im PR nachgezogen werden",
+      "managerFilePatterns": ["/^versions\\.env$/"],
+      "matchStrings": ["S6_OVERLAY_VERSION=(?<currentValue>[\\d.]+)"],
+      "depNameTemplate": "just-containers/s6-overlay",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^deploy/\\.env\\.example$/"],
+      "matchStrings": ["CROWDSEC_VERSION=(?<currentValue>v[\\d.]+)"],
+      "depNameTemplate": "crowdsecurity/crowdsec",
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "nginx: nur Stable-Linie (gerade Minor-Version)",
+      "matchPackageNames": ["nginx/nginx"],
+      "allowedVersions": "/^\\d+\\.\\d*[02468]\\.\\d+$/"
+    },
+    {
+      "description": "Go-Image bleibt auf trixie; Go-Patch-Releases sind Sicherheitsupdates",
+      "matchPackageNames": ["golang"],
+      "matchDatasources": ["docker"],
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-(?<compatibility>trixie)$"
+    },
+    {
+      "description": "Automerge: Patch-Versionen und Digest-Updates bei grüner Pipeline",
+      "matchUpdateTypes": ["patch", "digest", "pinDigest"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Hash-pflichtige Abhängigkeiten nie automatisch mergen (SHA256 in versions.env von Hand/Bot nachziehen)",
+      "matchPackageNames": ["nginx/nginx", "just-containers/s6-overlay"],
+      "automerge": false,
+      "prBodyNotes": [
+        "⚠️ `versions.env` enthält zu dieser Version gehörende SHA256-Werte. Bitte im PR aktualisieren (nginx: Tarball von nginx.org, zusätzlich GPG-geprüft im Build; s6-overlay: `.sha256`-Dateien des Releases)."
+      ]
+    },
+    {
+      "description": "Minor/Major: PR mit Review (CRS-Updates können neue False Positives bringen)",
+      "matchUpdateTypes": ["minor", "major"],
+      "automerge": false,
+      "labels": ["dependencies", "needs-review"]
+    },
+    {
+      "description": "CRS zuerst mit DetectionOnly auf einer Testinstanz prüfen",
+      "matchPackageNames": ["coreruleset/coreruleset"],
+      "automerge": false,
+      "prBodyNotes": ["CRS-Update: vor dem Rollout mit `nrp waf set detection-only` auf einer Testinstanz prüfen."]
+    },
+    {
+      "description": "Go-Module gebündelt",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "go modules"
+    }
+  ]
+}

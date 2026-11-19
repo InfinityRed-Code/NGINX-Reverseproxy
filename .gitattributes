@@ -1,0 +1,14 @@
+# Shell-/s6-Dateien müssen LF behalten (werden unverändert ins Image kopiert)
+docker/**        text eol=lf
+docker/keys/**   -text
+patches/**/*.patch -text
+versions.env     text eol=lf
+*.sh             text eol=lf
+
+# Eingebettete bzw. byte-genau verglichene Dateien: LF auf allen Plattformen
+*.go             text eol=lf
+*.sql            text eol=lf
+*.tmpl           text eol=lf
+*.golden         text eol=lf
+**/testdata/**   text eol=lf
+api/openapi.yaml text eol=lf

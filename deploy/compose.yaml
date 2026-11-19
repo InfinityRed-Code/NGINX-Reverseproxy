@@ -1,0 +1,74 @@
+name: nrp
+
+# Erstinbetriebnahme:
+#   cp .env.example .env            # Werte anpassen
+#   mkdir -p data/db data/backups data/logs secrets
+#   head -c 32 /dev/urandom > secrets/master.key && chmod 600 secrets/master.key
+#   docker compose up -d
+#   docker exec -it nrp nrp doctor
+#   docker exec -i nrp nrp client issue admin --role admin --csr - < admin.csr > admin.crt
+
+services:
+  nrp:
+    image: ghcr.io/softengine-it/nrp:${NRP_VERSION:?}
+    container_name: nrp
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "${NRP_WG_PORT:-51820}:${NRP_WG_PORT:-51820}/udp"   # Hub lauscht im Container auf demselben Port
+      - "127.0.0.1:8443:8443"         # API nur lokal; über WireGuard via Hub-IP
+    environment:
+      NRP_PUBLIC_ENDPOINT: ${NRP_PUBLIC_ENDPOINT:?}   # z. B. proxy.example.com:51820
+      NRP_API_LISTEN: 0.0.0.0:8443                    # im Container; veröffentlicht nur auf 127.0.0.1
+      NRP_API_SANS: ${NRP_API_SANS:-127.0.0.1,localhost}
+      NRP_WIREGUARD_ENABLED: ${NRP_WIREGUARD_ENABLED:-true}
+      NRP_WG_PORT: ${NRP_WG_PORT:-51820}             # gilt beim Erststart; danach steht der Port in der DB
+      NRP_ACME_DIRECTORY: ${NRP_ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}
+      NRP_ACME_EMAIL: ${NRP_ACME_EMAIL:-}
+      NRP_LOG_LEVEL: ${NRP_LOG_LEVEL:-info}
+    secrets:
+      - nrp_master_key
+    volumes:
+      - ./data/db:/var/lib/nrp/db           # Verzeichnis mounten, nicht die Datei (WAL!)
+      - ./data/backups:/var/lib/nrp/backups
+      - ./data/logs:/var/log/nrp
+    read_only: true
+    tmpfs:
+      - /run:exec,mode=0755                 # s6-overlay braucht ein ausführbares /run
+      - /var/cache/nginx
+      - /tmp
+    cap_drop: [ALL]
+    # Mit docker/tests/e2e.sh verifizierte Liste (Details: docker/README.md im Repo):
+    #   CHOWN             nginx-Master und init setzen den nginx-User als Eigentümer von
+    #                     Temp- und Coraza-Log-Verzeichnissen (ohne: Container startet nicht)
+    #   SETUID, SETGID    nginx-Worker laufen als User nginx
+    #   DAC_OVERRIDE      root schreibt in Bind-Mounts (data/, vom Host-User angelegt) und
+    #                     liest master.key (0600, Host-User). Entbehrlich, wenn data/ und
+    #                     secrets/ auf dem Host root gehören.
+    #   NET_BIND_SERVICE  Ports 80/443 (unter Docker >= 20.10 nicht zwingend, für andere
+    #                     Runtimes belassen)
+    #   NET_ADMIN         nur mit WireGuard (wg0, Peers, Routen); sonst entfernen
+    # FOWNER wird nicht benötigt.
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE, NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 30s
+
+  crowdsec:
+    profiles: ["crowdsec"]
+    image: crowdsecurity/crowdsec:${CROWDSEC_VERSION:-v1.6.8}
+    restart: unless-stopped
+    environment:
+      COLLECTIONS: crowdsecurity/nginx
+    volumes:
+      - ./data/logs/nginx:/var/log/nginx:ro
+      - ./data/crowdsec/config:/etc/crowdsec
+      - ./data/crowdsec/data:/var/lib/crowdsec/data
+      - ./contrib/crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+    # LAPI nur lokal: der Firewall-Bouncer läuft auf dem Host (nftables/iptables)
+    ports:
+      - "127.0.0.1:8080:8080"
+
+secrets:
+  nrp_master_key:
+    file: ./secrets/master.key

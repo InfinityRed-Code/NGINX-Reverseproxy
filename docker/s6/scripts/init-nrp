@@ -1,0 +1,16 @@
+#!/bin/sh
+# Oneshot vor nginx und nrpd: legt Verzeichnisse an, die auf tmpfs bzw. im
+# Bind-Mount liegen und deshalb nicht aus dem Image kommen.
+set -eu
+
+mkdir -p /run/nrp /run/nrp/render /run/nrp/certs /run/nrp/acme \
+         /var/log/nrp/nginx /var/log/nrp/coraza \
+         /var/cache/nginx
+chmod 0755 /run/nrp /run/nrp/render /run/nrp/acme
+chmod 0700 /run/nrp/certs
+
+# Coraza öffnet das Audit-Log im nginx-Worker (User nginx), nicht im Master;
+# die Temp-Verzeichnisse unter /var/cache/nginx gehören ebenfalls den Workern.
+for d in /var/log/nrp/coraza /var/cache/nginx; do
+  [ "$(stat -c %U "$d")" = "nginx" ] || chown nginx:nginx "$d"
+done

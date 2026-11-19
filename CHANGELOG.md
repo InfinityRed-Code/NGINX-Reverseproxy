@@ -2,6 +2,51 @@
 
 Alle wichtigen Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## [Unveröffentlicht] – Neufassung als Container (Go, REST-API, SQLite)
+
+Umsetzung von [`rewrite.md`](rewrite.md). Die Python-CLI (bis 3.2.0) liegt unverändert unter `legacy/v2`.
+
+### Neu
+
+- **Container-Image** auf `debian:trixie-slim`: nginx aus Quellcode (nur benötigte Module), libcoraza und coraza-nginx
+  statisch eingebunden, OWASP CRS, s6-overlay, `nrp`. Versionen in `versions.env`, Patch-Verzeichnis `patches/`,
+  Build-Smoke-Test mit echter WAF-Anfrage.
+- **`nrpd`** (`nrp serve`): REST-API `/api/v1` (OpenAPI in `api/openapi.yaml`) mit mTLS und interner CA, Rollen
+  `viewer`/`operator`/`admin`, optionalen API-Tokens, ETag/`If-Match`, `Idempotency-Key`, Fehlern nach RFC 9457.
+- **SQLite** als einzige Quelle der Wahrheit (WAL, Migrationen, Geheimnisse mit XChaCha20-Poly1305 verschlüsselt);
+  Zertifikate und nginx-Konfiguration werden beim Start nach tmpfs materialisiert.
+- **Audit-Log** mit Hash-Kette für jede Änderung, auch für verweigerte und fehlgeschlagene Aktionen
+  (`nrp audit list/verify/prune`), zusätzlich als JSON-Zeilen auf stdout.
+- **Reconciler**: rendert Generationen, prüft sie mit `nginx -t` und einem Coraza-Regelcheck, schaltet atomar um,
+  behält die letzten 10 für `nrp render rollback`. Ein von `nginx -t` abgelehnter Host blockiert andere Änderungen nicht.
+- **ACME mit lego** (HTTP-01 über einen globalen Port-80-Server, ARI, Worker-Pool, Retry) statt certbot.
+- **WireGuard** über Netlink/wgctrl statt `wg-quick`; Site-Status aus dem Handshake; `nrp site rotate-psk`.
+- **CLI** in drei Modi: lokal per Unix-Socket (`docker exec`), remote per mTLS, offline direkt auf der Datenbank.
+  Neu u. a. `host set`, `cert`, `job`, `render`, `settings`, `client`, `backup`, `export`/`apply`, `doctor`.
+- **Import** einer v2-Installation: `nrp --offline import v2` (Hosts, certbot-Zertifikate, Sites, Hub-Schlüssel).
+- CI: Go-Tests mit `-race`, Image-Build, drei E2E-Suiten (gehärteter Start, ACME gegen Pebble inkl. API/WAF/Rollback,
+  WireGuard-Tunnel), Trivy, SBOM, cosign; nächtlicher Rebuild; Renovate.
+
+### Geändert (gegenüber der Python-CLI)
+
+- `nrp add/remove/list` → `nrp host add/remove/list` (Flags gleich; `nrp list` bleibt als Alias).
+  `-o` ist jetzt das Ausgabeformat, `--overwrite` hat keine Kurzform mehr.
+- `nrp waf enable/disable` → `nrp waf set on|detection-only|off`. Standardmodus ist `DetectionOnly`.
+- nginx-Templates: `Connection $connection_upgrade` für WebSockets, `proxy_http_version 1.1` immer, `http2 on`,
+  IPv6-Listener, `server_tokens off`, eigene TLS-Parameter (Mozilla Intermediate, ohne DHE), ACME auch für Hosts
+  mit abweichendem Port. HSTS `preload` ist nicht mehr Standard (importierte Hosts behalten ihren Wert).
+- Unbekannte Namen auf Port 443 erhalten kein Zertifikat mehr (`ssl_reject_handshake`) statt einer 404-Seite mit
+  Dummy-Zertifikat.
+- WireGuard-Standardport ist einheitlich 51820 (`config.py` nutzte 51825, die Doku 51820); der Import übernimmt den
+  tatsächlichen Port.
+
+### Entfernt
+
+- `nrp setup`, `nrp waf enable --rebuild/--crs-version`, `nrp remote-setup` (ersetzt durch Image bzw. mTLS-Clients).
+- `nrp f2b`: Fail2Ban läuft nicht im Container; CrowdSec als Compose-Profil, Fail2Ban-Filter unter `contrib/fail2ban`.
+
+---
+
 ## [3.2.0] - 2026-08-10
 
 ### Hinzugefügt

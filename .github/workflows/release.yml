@@ -1,0 +1,243 @@
+name: Release
+
+# Veröffentlicht ein signiertes Multi-Arch-Image (rewrite.md 4.7).
+#   - Tag v*            : reguläres Release
+#   - Nächtlich (Cron)  : Neubau des letzten Release-Tags mit aktuellen Debian-Paketen
+#   - workflow_dispatch : Notfall-Build, z. B. nach Einspielen eines Patches unter patches/
+#
+# Tags pro Build: unveränderlich  <version>[-pN]-<YYYYMMDD>[.<run>]
+#                 beweglich       <major>.<minor>   (nur für Release-Tags, nicht für Branches)
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git-Ref (leer = letztes Release-Tag). Für Patches: Branch/Commit mit dem Patch."
+        required: false
+        default: ""
+      patch_suffix:
+        description: "Suffix für gepatchte Builds, z. B. p1 (ergibt v3.1.0-p1-…)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.ref }}-${{ inputs.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/softengine-it/nrp
+
+jobs:
+  prepare:
+    name: Version bestimmen
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.v.outputs.ref }}
+      version: ${{ steps.v.outputs.version }}
+      immutable: ${{ steps.v.outputs.immutable }}
+      moving: ${{ steps.v.outputs.moving }}
+      build_args: ${{ steps.args.outputs.list }}
+      go_version: ${{ steps.args.outputs.go_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Ref und Tags
+        id: v
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          PATCH_SUFFIX: ${{ inputs.patch_suffix }}
+        run: |
+          set -euo pipefail
+          latest_tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+          case "$GITHUB_EVENT_NAME" in
+            push) ref="$GITHUB_REF_NAME" ;;
+            schedule) ref="${latest_tag:-$GITHUB_SHA}" ;;
+            workflow_dispatch) ref="${INPUT_REF:-${latest_tag:-$GITHUB_SHA}}" ;;
+          esac
+          git checkout --quiet "$ref"
+          # Basisversion: exaktes Tag, sonst letztes erreichbares Tag, sonst v0.0.0
+          base="$(git describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null \
+                  || git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo v0.0.0)"
+          exact="$(git describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null || true)"
+          [[ "$base" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "ungültige Version: $base" >&2; exit 1; }
+          version="$base"
+          if [ -n "$PATCH_SUFFIX" ]; then
+            [[ "$PATCH_SUFFIX" =~ ^p[0-9]+$ ]] || { echo "patch_suffix muss pN sein" >&2; exit 1; }
+            version="$base-$PATCH_SUFFIX"
+          elif [ -z "$exact" ]; then
+            version="$base-dev.$(git rev-parse --short=12 HEAD)"
+          fi
+          immutable="$version-$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER"
+          moving=""
+          # Bewegliches Tag nur für Stände, die ein Release-Tag oder ein Patch darauf sind
+          if [ -n "$exact" ] || [ -n "$PATCH_SUFFIX" ]; then
+            moving="$(sed -E 's/^(v[0-9]+\.[0-9]+)\..*/\1/' <<<"$base")"
+          fi
+          {
+            echo "ref=$(git rev-parse HEAD)"
+            echo "version=$version"
+            echo "immutable=$immutable"
+            echo "moving=$moving"
+          } >> "$GITHUB_OUTPUT"
+          echo "### Build \`$immutable\` (ref \`$ref\`, moving \`${moving:-–}\`)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build-Argumente aus versions.env
+        id: args
+        run: |
+          {
+            echo 'list<<EOF'
+            grep -Ev '^(#|$)' versions.env
+            echo "VERSION=${{ steps.v.outputs.immutable }}"
+            echo 'EOF'
+            echo "go_version=$(sed -n 's/^GO_IMAGE=golang:\([0-9.]*\)-.*/\1/p' versions.env)"
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Go (test, govulncheck)
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.prepare.outputs.go_version }}
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          # arm64 vorerst nicht gebaut; zum Aktivieren:
+          # - arch: arm64
+          #   runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build und Laden für E2E
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          build-args: ${{ needs.prepare.outputs.build_args }}
+          tags: nrp:e2e
+          load: true
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }},mode=max
+      - name: E2E
+        run: bash docker/tests/e2e.sh nrp:e2e
+      - name: Trivy (Abbruch bei CRITICAL/HIGH mit verfügbarem Fix)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: nrp:e2e
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Trivy (vollständiger Bericht)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: nrp:e2e
+          format: table
+          exit-code: "0"
+      - name: Push per Digest (aus dem Cache, ohne Tag)
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          build-args: ${{ needs.prepare.outputs.build_args }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Digest exportieren
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.push.outputs.digest }}"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Manifest, SBOM, Signatur
+    needs: [prepare, test, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write          # cosign keyless (GitHub OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Multi-Arch-Manifest mit Tags erstellen
+        id: manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMMUTABLE: ${{ needs.prepare.outputs.immutable }}
+          MOVING: ${{ needs.prepare.outputs.moving }}
+        run: |
+          set -euo pipefail
+          # Unveränderliches Tag darf nicht überschrieben werden
+          if docker buildx imagetools inspect "$IMAGE:$IMMUTABLE" >/dev/null 2>&1; then
+            echo "Tag $IMMUTABLE existiert bereits" >&2; exit 1
+          fi
+          tags=(-t "$IMAGE:$IMMUTABLE")
+          [ -n "$MOVING" ] && tags+=(-t "$IMAGE:$MOVING")
+          docker buildx imagetools create "${tags[@]}" $(printf "$IMAGE@sha256:%s " *)
+          digest="$(docker buildx imagetools inspect "$IMAGE:$IMMUTABLE" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "\`$IMAGE:$IMMUTABLE\` → \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+      - uses: sigstore/cosign-installer@v3
+      - name: SBOM (syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.manifest.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+      - name: Signieren und SBOM attestieren (cosign keyless)
+        env:
+          REF: ${{ env.IMAGE }}@${{ steps.manifest.outputs.digest }}
+        run: |
+          cosign sign --yes "$REF"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$REF"
