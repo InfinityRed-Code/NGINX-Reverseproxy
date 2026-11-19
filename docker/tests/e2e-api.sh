@@ -54,6 +54,17 @@ put() { docker cp "$1" "$P-curl:/w/$(basename "$1")" >/dev/null; }
 expect() { local what="$1" want="$2" got="$3"; [ "$got" = "$want" ] || fail "$what: erhalten '$got', erwartet '$want'"; }
 contains() { grep -q -- "$2" <<<"$1" || fail "$3 (gesucht: $2)
 $1"; }
+# --wait kehrt zurueck, sobald das Zertifikat ausgestellt ist; nginx laedt die neue
+# Generation kurz danach. served wartet, bis der Host tatsaechlich ausgeliefert wird.
+served() {
+  local c=""
+  for _ in $(seq 1 40); do
+    c="$(https "$1" -o /dev/null -w '%{http_code}' "https://$1/" 2>/dev/null || true)"
+    [ "$c" = 200 ] && return 0
+    sleep 0.5
+  done
+  fail "$1 wird nach dem Anlegen nicht ausgeliefert (HTTP $c)"
+}
 
 # ── Umgebung ────────────────────────────────────────────────────────────────
 step "Netz, Backend, ACME-Test-CA (Pebble)"
@@ -106,6 +117,7 @@ expect "unbekannter Name auf Port 80" 404 "$(code "http://$NRP_IP/")"
 # ── 1. Host + ACME + Proxy ──────────────────────────────────────────────────
 step "Host anlegen, Zertifikat per ACME HTTP-01, Proxy zum Backend"
 nrp host add app.e2e.test -i backend -p 80 --waf --wait --wait-timeout 2m >/dev/null || fail "host add --wait"
+served app.e2e.test
 out="$(nrp host show app.e2e.test)"
 contains "$out" "active" "Host ist nach --wait nicht active"
 out="$(nrp cert list)"
@@ -140,6 +152,7 @@ expect "harmlose Anfrage bei On" 200 "$(https app.e2e.test -o /dev/null -w '%{ht
 docker exec "$NRP" sh -c 'test -s /var/log/nrp/coraza/audit.log' || fail "Coraza-Audit-Log ist leer"
 # Host ohne WAF wird nicht gefiltert.
 nrp host add plain.e2e.test -i backend -p 80 --wait >/dev/null || fail "zweiter Host"
+served plain.e2e.test
 expect "XSS ohne WAF" 200 "$(https plain.e2e.test -o /dev/null -w '%{http_code}' 'https://plain.e2e.test/?q=%3Cscript%3Ealert(1)%3C/script%3E')"
 
 step "Defekte WAF-Regeln werden abgelehnt, die alte Konfiguration bleibt aktiv"
@@ -207,6 +220,7 @@ for i in $(seq 1 30); do
   [ "$i" = 30 ] && fail "defekter Host wurde nicht als error markiert: $(nrp host show broken.e2e.test)"
 done
 nrp host add after.e2e.test -i backend -p 80 --wait >/dev/null || fail "Host nach defektem Host"
+served after.e2e.test
 contains "$(https after.e2e.test https://after.e2e.test/after)" "GET /after" "Aenderungen nach defektem Host werden nicht angewendet"
 nrp host set broken.e2e.test -i backend >/dev/null
 for i in $(seq 1 30); do
