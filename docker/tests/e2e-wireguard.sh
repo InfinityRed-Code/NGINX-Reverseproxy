@@ -104,7 +104,14 @@ done
 contains "$(docker exec "$NRP" wg show wg0 allowed-ips)" "10.240.0.0/29" "AllowedIPs des Peers"
 
 step "Handshake und Erreichbarkeit durch den Tunnel"
-docker exec "$SITE" ping -c 2 -W 3 10.240.0.1 >/dev/null || fail "Hub durch den Tunnel nicht erreichbar"
+# Die Site hat ihren ersten Handshake evtl. gesendet, bevor der Hub den Peer kannte;
+# WireGuard wiederholt ihn erst nach 5 s. Deshalb mit Geduld pruefen.
+ok=0
+for i in $(seq 1 20); do
+  if docker exec "$SITE" ping -c 1 -W 2 10.240.0.1 >/dev/null 2>&1; then ok=1; break; fi
+  sleep 1
+done
+[ "$ok" = 1 ] || fail "Hub durch den Tunnel nicht erreichbar"
 docker exec "$NRP" sh -c 'command -v ping >/dev/null' && { docker exec "$NRP" ping -c 1 -W 3 10.240.0.2 >/dev/null || fail "Site vom Hub nicht erreichbar"; }
 out="$(nrp site show home --live)"
 contains "$out" "online=ja" "Live-Status aus dem Handshake"
