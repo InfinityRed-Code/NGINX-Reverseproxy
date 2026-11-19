@@ -8,7 +8,7 @@ Der gesamte Zustand liegt in einer SQLite-Datenbank neben der `compose.yaml`.
 > unter [`legacy/v2`](legacy/v2), der Umbauplan in [`rewrite.md`](rewrite.md).
 
 - **Ein Image**: nginx (aus Quellcode, nur benötigte Module), libcoraza, coraza-nginx, CRS und `nrp`. Kein Build auf dem Zielsystem.
-- **REST-API** mit Client-Zertifikaten einer internen CA, Rollen `viewer`/`operator`/`admin`, OpenAPI-Vertrag in [`api/openapi.yaml`](api/openapi.yaml).
+- **REST-API** mit Client-Zertifikaten einer internen CA, Rollen `viewer`/`operator`/`admin`, OpenAPI-Vertrag in [`api/openapi.yaml`](api/openapi.yaml), Referenz mit Beispielen in [`docs/api.md`](docs/api.md).
 - **Audit-Log** für jede Änderung, mit Hash-Kette (`nrp audit verify`).
 - **Datenebene unabhängig von der Steuerungsebene**: Fällt `nrpd` aus, proxyt nginx mit der letzten gültigen Konfiguration weiter.
 - **Sichere Änderungen**: Jede Generation wird mit `nginx -t` und einem Coraza-Regelcheck geprüft, bevor sie aktiv wird; Rollback auf die letzten 10 Generationen.
