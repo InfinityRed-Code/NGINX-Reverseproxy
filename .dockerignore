@@ -1,0 +1,16 @@
+.git
+.github
+.claude
+legacy/
+data/
+secrets/
+deploy/
+contrib/
+*.md
+!patches/README.md
+**/__pycache__
+.pytest_cache
+*.log
+*.db
+*.db-wal
+*.db-shm

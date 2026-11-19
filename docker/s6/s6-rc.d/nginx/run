@@ -1,0 +1,5 @@
+#!/bin/sh
+# Datenebene. Unabhängig von nrpd: fällt nrpd aus, proxyt nginx mit der
+# letzten gültigen Generation weiter.
+exec 2>&1
+exec nginx -g 'daemon off;'

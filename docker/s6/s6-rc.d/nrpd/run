@@ -1,0 +1,5 @@
+#!/command/with-contenv sh
+# Steuerungsebene (REST-API, Reconciler, ACME, WireGuard).
+# with-contenv: NRP_*-Variablen des Containers an den Dienst durchreichen.
+exec 2>&1
+exec nrp serve
