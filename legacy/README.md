@@ -1,20 +1,12 @@
-# Legacy Bash Scripts
+# Legacy
 
-Diese Verzeichnis enthält die alten Bash-Skripte zur Referenz.
+Frühere Generationen von NRP, nur als Referenz. Sie werden nicht mehr weiterentwickelt.
 
-**Diese Skripte sind veraltet und werden durch das neue Python CLI-Tool `nrp` ersetzt.**
+| Verzeichnis | Inhalt |
+|---|---|
+| [`v1/`](v1) | Ursprüngliche Bash-Skripte (`management.sh`, `setup.sh`, `setup_for_remote_execution.sh`) |
+| [`v2/`](v2) | Python-CLI für Debian-Hosts (`nrp add/remove/list`, certbot, wg-quick, Fail2Ban, Coraza-Build auf dem Host), zuletzt Version 3.2.0 |
 
-## Migration
-
-Alte Befehle → Neue Befehle:
-
-- `./management.sh` → `nrp` (interaktiv)
-- `./setup.sh` → `sudo nrp setup`
-- `./setup_for_remote_execution.sh` → `sudo nrp remote-setup`
-- `./management.sh domain.com 192.168.1.10 http n 8080 443` → `nrp add domain.com -i 192.168.1.10 -p 8080`
-
-## Dateien
-
-- `management.sh` - Alte Management-Skript
-- `setup.sh` - Alte Setup-Skript
-- `setup_for_remote_execution.sh` - Alte Remote-Setup-Skript
+Die aktuelle Fassung ist der Container mit REST-API im Repository-Root. Eine bestehende v2-Installation
+lässt sich mit `nrp --offline import v2` übernehmen, siehe [README](../README.md#migration-von-v2).
+Die Zuordnung der alten Befehle steht in [`rewrite.md`, Abschnitt 10.3](../rewrite.md#103-übersetzungstabelle).
