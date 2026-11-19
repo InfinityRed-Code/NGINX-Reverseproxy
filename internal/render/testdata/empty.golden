@@ -1,0 +1,74 @@
+##### coraza/coraza.conf #####
+# NRP v3 - Coraza-Basis-Konfiguration. Modus setzen mit 'nrp waf set'.
+# On = blockieren, DetectionOnly = nur protokollieren, Off = deaktiviert
+SecRuleEngine DetectionOnly
+
+SecRequestBodyAccess On
+SecRequestBodyLimit 13107200
+SecRequestBodyNoFilesLimit 131072
+SecRequestBodyLimitAction Reject
+
+SecResponseBodyAccess Off
+
+SecAuditEngine RelevantOnly
+SecAuditLogRelevantStatus "^(?:5|4(?:0[0-35-9]|[1-9][0-9]))"
+SecAuditLogParts ABIJDEFHZ
+SecAuditLogType Serial
+SecAuditLogFormat JSON
+SecAuditLog /var/log/nrp/coraza/audit.log
+
+SecArgumentSeparator &
+SecCookieFormat 0
+##### coraza/crs-overrides-after.conf #####
+# NRP v3 - eigene Anpassungen nach den CRS-Regeln.
+##### coraza/crs-overrides.conf #####
+# NRP v3 - eigene Anpassungen vor den CRS-Regeln ('nrp waf rules set').
+##### coraza/crs-setup.conf #####
+
+##### coraza/main.conf #####
+# NRP v3 - Coraza-Regelkette, eingebunden je Host per coraza_rules_file.
+Include @NRP_GEN_DIR@/coraza/coraza.conf
+Include @NRP_GEN_DIR@/coraza/crs-setup.conf
+Include @NRP_GEN_DIR@/coraza/crs-overrides.conf
+Include /usr/share/nrp/coreruleset/rules/*.conf
+Include @NRP_GEN_DIR@/coraza/crs-overrides-after.conf
+##### http.d/00-acme-and-catchall.conf #####
+# NRP v3 - ACME-Challenge und Catch-All. Nicht manuell bearbeiten.
+
+# Port 80: ACME HTTP-01 fuer alle Namen, sonst 404.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /run/nrp/acme;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    root /usr/share/nrp/html;
+    error_page 404 /404.html;
+    location = /404.html {
+        internal;
+    }
+    location / {
+        return 404;
+    }
+}
+
+# Port 443: unbekannte Namen erhalten kein Zertifikat.
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+}
+##### http.d/10-ssl-params.conf #####
+# NRP v3 - TLS-Parameter nach Mozilla "Intermediate" (nur ECDHE, kein DHE).
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+ssl_prefer_server_ciphers off;
+ssl_session_timeout 1d;
+ssl_session_cache shared:NRP_TLS:10m;
+ssl_session_tickets off;

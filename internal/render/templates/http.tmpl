@@ -1,0 +1,142 @@
+{{define "00-acme-and-catchall.conf" -}}
+# NRP v3 - ACME-Challenge und Catch-All. Nicht manuell bearbeiten.
+
+# Port 80: ACME HTTP-01 fuer alle Namen, sonst 404.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root {{.AcmeDir}};
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    root {{.HTMLDir}};
+    error_page 404 /404.html;
+    location = /404.html {
+        internal;
+    }
+    location / {
+        return 404;
+    }
+}
+{{range .TLSPorts}}
+# Port {{.}}: unbekannte Namen erhalten kein Zertifikat.
+server {
+    listen {{.}} ssl default_server;
+    listen [::]:{{.}} ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+}
+{{end}}{{end}}
+
+{{define "10-ssl-params.conf" -}}
+# NRP v3 - TLS-Parameter nach Mozilla "Intermediate" (nur ECDHE, kein DHE).
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+ssl_prefer_server_ciphers off;
+ssl_session_timeout 1d;
+ssl_session_cache shared:NRP_TLS:10m;
+ssl_session_tickets off;
+{{end}}
+
+{{define "hsts" -}}
+add_header Strict-Transport-Security "max-age={{.HSTS.MaxAge}}{{if .HSTS.IncludeSubdomains}}; includeSubDomains{{end}}{{if .HSTS.Preload}}; preload{{end}}" always;
+{{end}}
+
+{{define "host" -}}
+# NRP v3 - Reverse Proxy fuer {{.FQDN}}{{if ne .ExternalPort 443}} (Port {{.ExternalPort}}){{end}}. Nicht manuell bearbeiten.
+# Zertifikat: sha256:{{.CertFingerprint}}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{.FQDN}};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root {{.AcmeDir}};
+        default_type text/plain;
+        try_files $uri =404;
+    }
+    location / {
+        return 301 https://$host{{if ne .ExternalPort 443}}:{{.ExternalPort}}{{end}}$request_uri;
+    }
+}
+
+server {
+    listen {{.ExternalPort}} ssl;
+    listen [::]:{{.ExternalPort}} ssl;
+    http2 on;
+    server_name {{.FQDN}};
+
+    ssl_certificate {{.CertsDir}}/{{.FQDN}}/fullchain.pem;
+    ssl_certificate_key {{.CertsDir}}/{{.FQDN}}/privkey.pem;
+
+    include {{.GenDir}}/snippets/hsts-{{.FQDN}}.conf;
+
+    client_max_body_size {{.ClientMaxBodySize}};
+{{- if ne .ExternalPort 443}}
+
+    # Klartext-Anfrage auf dem TLS-Port: auf https umleiten statt Fehler 400.
+    error_page 497 =301 https://$host:{{.ExternalPort}}$request_uri;
+{{- end}}
+{{- if .WAF}}
+
+    coraza on;
+    coraza_rules_file {{.GenDir}}/coraza/main.conf;
+{{- end}}
+
+    location / {
+        proxy_pass {{.Scheme}}://{{.UpstreamHost}}:{{.Port}}/;
+        proxy_http_version 1.1;
+
+        # add_header wird nicht vererbt, sobald eine Ebene eigene Header setzt.
+        include {{.GenDir}}/snippets/hsts-{{.FQDN}}.conf;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Scheme $scheme;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Bewusst $remote_addr: Edge-Proxy, Client-Header werden nicht uebernommen.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+{{- if .Websockets}}
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+{{- end}}
+    }
+}
+{{end}}
+
+{{define "coraza.conf" -}}
+# NRP v3 - Coraza-Basis-Konfiguration. Modus setzen mit 'nrp waf set'.
+# On = blockieren, DetectionOnly = nur protokollieren, Off = deaktiviert
+SecRuleEngine {{.WAFMode}}
+
+SecRequestBodyAccess On
+SecRequestBodyLimit 13107200
+SecRequestBodyNoFilesLimit 131072
+SecRequestBodyLimitAction Reject
+
+SecResponseBodyAccess Off
+
+SecAuditEngine RelevantOnly
+SecAuditLogRelevantStatus "^(?:5|4(?:0[0-35-9]|[1-9][0-9]))"
+SecAuditLogParts ABIJDEFHZ
+SecAuditLogType Serial
+SecAuditLogFormat JSON
+SecAuditLog {{.CorazaAuditLog}}
+
+SecArgumentSeparator &
+SecCookieFormat 0
+{{end}}
+
+{{define "main.conf" -}}
+# NRP v3 - Coraza-Regelkette, eingebunden je Host per coraza_rules_file.
+Include {{.GenDir}}/coraza/coraza.conf
+Include {{.GenDir}}/coraza/crs-setup.conf
+Include {{.GenDir}}/coraza/crs-overrides.conf
+Include {{.CRSDir}}/rules/*.conf
+Include {{.GenDir}}/coraza/crs-overrides-after.conf
+{{end}}
