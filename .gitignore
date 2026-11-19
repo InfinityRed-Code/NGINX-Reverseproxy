@@ -70,3 +70,15 @@ Thumbs.db
 # Project specific
 *.log
 test.txt
+
+# NRP v3 (Go, Container)
+/nrp
+/nrp.exe
+/data/
+/secrets/
+deploy/data/
+deploy/secrets/
+deploy/.env
+*.db
+*.db-wal
+*.db-shm
