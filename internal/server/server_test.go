@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
+
 	"github.com/SoftENGINE-IT/NGINX-Reverseproxy/internal/apigen"
 	"github.com/SoftENGINE-IT/NGINX-Reverseproxy/internal/audit"
 	"github.com/SoftENGINE-IT/NGINX-Reverseproxy/internal/auth"
@@ -151,7 +153,8 @@ func hostBody(fqdn string) map[string]any {
 // der Mindestrolle 403, sonst alles ausser 401/403.
 func TestRoleMatrixFromSpec(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.TokensEnabled = true })
-	spec, err := apigen.GetSwagger()
+	// Die Spezifikation ist der Vertrag: direkt aus api/openapi.yaml lesen.
+	spec, err := openapi3.NewLoader().LoadFromFile("../../api/openapi.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,9 +1,11 @@
 package: apigen
-output: internal/apigen/api.gen.go
+# Pfad relativ zu internal/apigen: go:generate laeuft im Paketverzeichnis.
+output: api.gen.go
 generate:
   models: true
   chi-server: true
   client: true
-  embedded-spec: true
+  # Kein embedded-spec: der gzip-Blob haengt von der Go-Version ab und macht
+  # "go generate && git diff --exit-code" in CI instabil.
 output-options:
   skip-prune: true
